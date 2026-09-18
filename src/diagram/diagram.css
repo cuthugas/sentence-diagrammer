@@ -1,0 +1,58 @@
+.diagram-wrap {
+  position: relative;
+  overflow: auto;
+  background: var(--diagram-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.diagram-svg {
+  display: block;
+  min-width: 100%;
+}
+
+.diagram-word {
+  cursor: help;
+}
+
+.diagram-word:hover {
+  filter: brightness(0.75);
+}
+
+.diagram-empty {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}
+
+.diagram-tooltip {
+  position: absolute;
+  transform: translate(-50%, -110%);
+  background: var(--tooltip-bg);
+  color: var(--tooltip-text);
+  padding: 10px 12px;
+  border-radius: 8px;
+  max-width: 240px;
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  z-index: 20;
+}
+
+.diagram-tooltip-word {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.diagram-tooltip-pos {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  margin-bottom: 4px;
+}
