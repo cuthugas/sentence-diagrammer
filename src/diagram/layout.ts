@@ -9,7 +9,6 @@ const DIVIDER_GAP = 10
 const WORD_GAP = 14
 const LEVEL_HEIGHT = 30
 const ANGLE_DEG = 36
-const ANGLE = (ANGLE_DEG * Math.PI) / 180
 const COMPOUND_OFFSET = 13
 
 let keyCounter = 0
@@ -49,12 +48,14 @@ function drawDiagonal(
   y: number,
   token: Token,
   explanation: string,
-  fontSize = FONT_SIZE - 2
+  fontSize = FONT_SIZE - 2,
+  angleDeg = ANGLE_DEG
 ): { endX: number; endY: number } {
+  const angleRad = (angleDeg * Math.PI) / 180
   const w = measureText(token.text, fontSize, 500)
-  const len = w / Math.cos(ANGLE) + 10
-  const dx = len * Math.cos(ANGLE)
-  const dy = len * Math.sin(ANGLE)
+  const len = w / Math.cos(angleRad) + 10
+  const dx = len * Math.cos(angleRad)
+  const dy = len * Math.sin(angleRad)
   const x2 = x + dx
   const y2 = y + dy
   lines.push({ key: key('dl'), x1: x, y1: y, x2, y2 })
@@ -65,7 +66,7 @@ function drawDiagonal(
     x: midX,
     y: midY - 5,
     text: token.text,
-    angle: ANGLE_DEG,
+    angle: angleDeg,
     color: POS_COLORS[token.pos],
     fontSize,
     anchor: 'middle',
@@ -74,6 +75,10 @@ function drawDiagonal(
   })
   return { endX: x2, endY: y2 }
 }
+
+/** Angle for a sub-modifier's branch (an adverb modifying an adjective) — steeper than
+ * its parent's diagonal so it visibly diverges instead of running collinear with it. */
+const SUB_ANGLE_DEG = ANGLE_DEG + 24
 
 /** Lays out a stack of modifiers (and their sub-modifiers) below a head point. */
 function layoutModifierStack(
@@ -85,6 +90,14 @@ function layoutModifierStack(
 ): { rightExtent: number; bottomExtent: number } {
   let rightExtent = headX
   let bottomExtent = baseY
+
+  // Vertical stem the head hangs from, so stacked modifiers branch off one
+  // continuous line instead of floating as disconnected diagonal segments.
+  if (modifiers.length > 1) {
+    const lastY = baseY + LEVEL_HEIGHT * (modifiers.length - 1) + 6
+    lines.push({ key: key('stem'), x1: headX, y1: baseY, x2: headX, y2: lastY })
+  }
+
   modifiers.forEach((mod, i) => {
     const y = baseY + LEVEL_HEIGHT * (i + 1) - LEVEL_HEIGHT + 6
     const { endX, endY } = drawDiagonal(lines, texts, headX, y, mod.word, mod.explanation)
@@ -94,7 +107,7 @@ function layoutModifierStack(
       mod.subModifiers.forEach((sub) => {
         const branchX = headX + (endX - headX) * 0.35
         const branchY = y + (endY - y) * 0.35
-        const r = drawDiagonal(lines, texts, branchX, branchY, sub.word, sub.explanation, FONT_SIZE - 4)
+        const r = drawDiagonal(lines, texts, branchX, branchY, sub.word, sub.explanation, FONT_SIZE - 4, SUB_ANGLE_DEG)
         rightExtent = Math.max(rightExtent, r.endX)
         bottomExtent = Math.max(bottomExtent, r.endY)
       })
