@@ -41,6 +41,14 @@ function wordWidth(text: string, weight = 600): number {
  * to fit `text` along it, with the text rotated to match the line's angle.
  * Returns the endpoint and the line's horizontal reach, for stacking/width bookkeeping.
  */
+/** The (length, dx, dy) of the diagonal line a word of `text` needs at `fontSize`/`angleDeg`. */
+function diagonalGeometry(text: string, fontSize: number, angleDeg = ANGLE_DEG): { len: number; dx: number; dy: number } {
+  const angleRad = (angleDeg * Math.PI) / 180
+  const w = measureText(text, fontSize, 500)
+  const len = w / Math.cos(angleRad) + 10
+  return { len, dx: len * Math.cos(angleRad), dy: len * Math.sin(angleRad) }
+}
+
 function drawDiagonal(
   lines: DiagramLine[],
   texts: DiagramText[],
@@ -51,11 +59,7 @@ function drawDiagonal(
   fontSize = FONT_SIZE - 2,
   angleDeg = ANGLE_DEG
 ): { endX: number; endY: number } {
-  const angleRad = (angleDeg * Math.PI) / 180
-  const w = measureText(token.text, fontSize, 500)
-  const len = w / Math.cos(angleRad) + 10
-  const dx = len * Math.cos(angleRad)
-  const dy = len * Math.sin(angleRad)
+  const { dx, dy } = diagonalGeometry(token.text, fontSize, angleDeg)
   const x2 = x + dx
   const y2 = y + dy
   lines.push({ key: key('dl'), x1: x, y1: y, x2, y2 })
@@ -80,9 +84,44 @@ function drawDiagonal(
  * its parent's diagonal so it visibly diverges instead of running collinear with it. */
 const SUB_ANGLE_DEG = ANGLE_DEG + 24
 
-/** Horizontal gap between the attachment points of coordinate modifiers fanned
- * out under the same head (see layoutModifierStack). */
-const MODIFIER_SPACING = 24
+/** Minimum clear gap left between one modifier's diagonal and the next one's,
+ * on top of whatever horizontal room the modifier's own word needs (see
+ * modifierAttachXs) -- keeps the fan out from looking cramped regardless of
+ * word length. */
+const MODIFIER_GAP = 12
+
+/**
+ * Attachment x-position for each modifier in a fanned-out stack (see
+ * layoutModifierStack), working right-to-left from the head. The modifier
+ * closest to the head (last in the list) attaches at `headX`; each earlier
+ * one is placed far enough further left to clear the PREVIOUS modifier's own
+ * diagonal (whose horizontal reach depends on its word's length) plus
+ * MODIFIER_GAP -- so consecutive modifiers keep a consistent visual gap
+ * regardless of how long their words are, instead of a fixed spacing that
+ * looks cramped for long words and sparse for short ones.
+ */
+function modifierAttachXs(headX: number, modifiers: ModifierAttachment[]): number[] {
+  const n = modifiers.length
+  const xs: number[] = new Array(n)
+  if (n === 0) return xs
+  xs[n - 1] = headX
+  for (let i = n - 2; i >= 0; i--) {
+    const nextDx = diagonalGeometry(modifiers[i + 1].word.text, FONT_SIZE - 2).dx
+    xs[i] = xs[i + 1] - (nextDx + MODIFIER_GAP)
+  }
+  return xs
+}
+
+/** Extra left margin a slot's first head needs so its own fanned-out
+ * modifiers (see modifierAttachXs) don't run backward into whatever sits
+ * immediately before it on the baseline (the previous word, or that word's
+ * own rightward-leaning modifiers). */
+function leadingModifierMargin(slot: NounSlot): number {
+  const firstId = slot.heads[0]?.id
+  const mods = firstId ? (slot.modifiers[firstId] ?? []) : []
+  if (!mods.length) return 0
+  return Math.max(0, -(modifierAttachXs(0, mods)[0] ?? 0))
+}
 
 /**
  * Lays out a stack of coordinate modifiers of one word (e.g. "the young" both
@@ -100,11 +139,11 @@ function layoutModifierStack(
 ): { rightExtent: number; bottomExtent: number } {
   let rightExtent = headX
   let bottomExtent = baseY
-  const n = modifiers.length
+  const xs = modifierAttachXs(headX, modifiers)
   const placements: { x: number; endX: number; endY: number }[] = []
 
   modifiers.forEach((mod, i) => {
-    const x = headX - (n - 1 - i) * MODIFIER_SPACING
+    const x = xs[i]
     const { endX, endY } = drawDiagonal(lines, texts, x, baseY, mod.word, mod.explanation)
     placements.push({ x, endX, endY })
     rightExtent = Math.max(rightExtent, endX)
@@ -295,11 +334,8 @@ export function layoutClause(clause: Clause): DiagramGroup {
   }
 
   // subject — reserve left margin so its fanned-out modifiers (see
-  // layoutModifierStack) don't run past the diagram's left edge; every later
-  // slot already has room to its left from what came before it.
-  const firstHeadId = clause.subject.heads[0]?.id
-  const firstHeadModCount = firstHeadId ? (clause.subject.modifiers[firstHeadId]?.length ?? 0) : 0
-  cx += Math.max(0, firstHeadModCount - 1) * MODIFIER_SPACING
+  // leadingModifierMargin) don't run past the diagram's left edge.
+  cx += leadingModifierMargin(clause.subject)
   const subj = layoutNounSlot(lines, texts, cx, baselineY, clause.subject)
   maxBottom = Math.max(maxBottom, subj.bottomExtent)
   cx = subj.rightExtent + DIVIDER_GAP
@@ -317,6 +353,7 @@ export function layoutClause(clause: Clause): DiagramGroup {
     prepPhrases: clause.verb.prepPhrases,
     clusterSizes: clause.verb.clusterSizes,
   }
+  cx += leadingModifierMargin(verbSlotAsNoun)
   const verbRes = layoutNounSlot(lines, texts, cx, baselineY, verbSlotAsNoun)
   maxBottom = Math.max(maxBottom, verbRes.bottomExtent)
   const verbAnchorX = (verbRes.startX + verbRes.endX) / 2
@@ -350,13 +387,13 @@ export function layoutClause(clause: Clause): DiagramGroup {
   // complement: direct object / predicate nominative / predicate adjective
   if (clause.complementKind === 'directObject' && clause.complement) {
     lines.push({ key: key('div2'), x1: cx, y1: baselineY - 16, x2: cx, y2: baselineY })
-    cx += DIVIDER_GAP
+    cx += DIVIDER_GAP + leadingModifierMargin(clause.complement)
     const res = layoutNounSlot(lines, texts, cx, baselineY, clause.complement)
     maxBottom = Math.max(maxBottom, res.bottomExtent)
     cx = res.rightExtent
   } else if (clause.complementKind === 'predicateNominative' && clause.complement) {
     lines.push({ key: key('div3'), x1: cx, y1: baselineY - 16, x2: cx + 10, y2: baselineY })
-    cx += 14
+    cx += 14 + leadingModifierMargin(clause.complement)
     const res = layoutNounSlot(lines, texts, cx, baselineY, clause.complement)
     maxBottom = Math.max(maxBottom, res.bottomExtent)
     cx = res.rightExtent
@@ -364,6 +401,8 @@ export function layoutClause(clause: Clause): DiagramGroup {
     lines.push({ key: key('div4'), x1: cx, y1: baselineY - 16, x2: cx + 10, y2: baselineY })
     cx += 14
     const pa = clause.predicateAdjective
+    const firstPaMods = pa.heads[0] ? (pa.modifiers[pa.heads[0].id] ?? []) : []
+    cx += firstPaMods.length ? Math.max(0, -(modifierAttachXs(0, firstPaMods)[0] ?? 0)) : 0
     let px = cx
     pa.heads.forEach((h) => {
       const w = wordWidth(h.text)
