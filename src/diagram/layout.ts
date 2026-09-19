@@ -59,16 +59,24 @@ function drawDiagonal(
   fontSize = FONT_SIZE - 2,
   angleDeg = ANGLE_DEG
 ): { endX: number; endY: number } {
+  const angleRad = (angleDeg * Math.PI) / 180
   const { dx, dy } = diagonalGeometry(token.text, fontSize, angleDeg)
   const x2 = x + dx
   const y2 = y + dy
   lines.push({ key: key('dl'), x1: x, y1: y, x2, y2 })
   const midX = x + dx * 0.52
   const midY = y + dy * 0.52
+  // Lift the text clear of the line along the line's own perpendicular, not
+  // a flat vertical shift -- a vertical shift's actual clearance from the
+  // line shrinks as the line gets steeper (down to a couple px at the sub-
+  // modifier angle), letting the stroke cut through the letters.
+  const clearance = fontSize * 0.5 + 2
+  const textX = midX + clearance * Math.sin(angleRad)
+  const textY = midY - clearance * Math.cos(angleRad)
   texts.push({
     key: key('dt'),
-    x: midX,
-    y: midY - 5,
+    x: textX,
+    y: textY,
     text: token.text,
     angle: angleDeg,
     color: POS_COLORS[token.pos],
@@ -304,8 +312,9 @@ function layoutNounSlot(
 
   if (slot.prepPhrases.length) {
     const last = heads[heads.length - 1]
-    const startLevel = Math.max(1, Math.round((bottomExtent - baselineY) / LEVEL_HEIGHT) + 1)
-    const pp = layoutPrepPhrases(lines, texts, last.x - wordWidth(last.token.text) / 2, baselineY, startLevel, slot.prepPhrases)
+    // starts right at the baseline (level 0) so its diagonal visibly
+    // connects to the head, same as any other modifier
+    const pp = layoutPrepPhrases(lines, texts, last.x - wordWidth(last.token.text) / 2, baselineY, 0, slot.prepPhrases)
     rightExtent = Math.max(rightExtent, pp.rightExtent)
     bottomExtent = Math.max(bottomExtent, pp.bottomExtent)
   }
