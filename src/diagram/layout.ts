@@ -210,7 +210,11 @@ function layoutPrepPhrases(
     // ("except snakes, darkness, and bugs") renders every item, not just one
     const shelfY = endY + 8
     const shelfStartX = endX - 6
-    const objRes = layoutNounSlot(lines, texts, shelfStartX + 4, shelfY, pp.object)
+    // clear gap after the preposition's own diagonal ends, plus room for the
+    // object's own leading modifiers to fan out without crowding it (see
+    // leadingModifierMargin)
+    const objStartX = shelfStartX + 14 + leadingModifierMargin(pp.object)
+    const objRes = layoutNounSlot(lines, texts, objStartX, shelfY, pp.object)
     objRes.heads.forEach((hp) => {
       const t = texts.find((tx) => tx.tokenId === hp.token.id && tx.explanation === undefined)
       if (t) t.explanation = `Object of the preposition "${pp.preposition.text}."`
