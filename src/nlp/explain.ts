@@ -8,6 +8,13 @@ function joinHeads(slot: NounSlot | null | undefined): string {
   return words.slice(0, -1).join(', ') + joiner + words[words.length - 1]
 }
 
+function joinHeadsPlain(slot: NounSlot): string {
+  const words = slot.heads.map((h) => h.text)
+  if (words.length <= 1) return words[0] ?? ''
+  const joiner = slot.conjunction ? ` ${slot.conjunction.text} ` : ' and '
+  return words.slice(0, -1).join(', ') + joiner + words[words.length - 1]
+}
+
 function describeModifiers(mods: ModifierAttachment[], noun: string): string[] {
   if (!mods.length) return []
   const list = mods.map((m) => `"${m.word.text}"`).join(', ')
@@ -32,7 +39,7 @@ function explainClause(clause: Clause): string[] {
     lines.push(...describeModifiers(clause.subject!.modifiers[h.id] ?? [], `"${h.text}"`))
   })
   clause.subject.prepPhrases.forEach((pp) => {
-    lines.push(`The prepositional phrase "${pp.preposition.text} ${pp.objectHead.text}" describes "${clause.subject!.heads.find((h) => h.id === pp.modifies)?.text ?? 'the noun'}."`)
+    lines.push(`The prepositional phrase "${pp.preposition.text} ${joinHeadsPlain(pp.object)}" describes "${clause.subject!.heads.find((h) => h.id === pp.modifies)?.text ?? 'the noun'}."`)
   })
 
   if (clause.verb.isLinking) {
@@ -58,7 +65,7 @@ function explainClause(clause: Clause): string[] {
   }
 
   clause.verb.prepPhrases.forEach((pp) => {
-    lines.push(`The prepositional phrase "${pp.preposition.text} ${pp.objectHead.text}" modifies the verb, acting as an adverb (telling how, when, or where).`)
+    lines.push(`The prepositional phrase "${pp.preposition.text} ${joinHeadsPlain(pp.object)}" modifies the verb, acting as an adverb (telling how, when, or where).`)
   })
 
   if (clause.leftoverWords.length) {

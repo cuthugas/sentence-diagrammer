@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { SentenceAnalysis } from '../nlp/types'
 import { POS_LABELS, POS_DESCRIPTIONS } from '../nlp/pos'
 import type { PosCategory } from '../nlp/types'
@@ -13,10 +14,15 @@ interface Props {
 interface TooltipState {
   x: number
   y: number
+  flip: boolean
   word: string
   pos: PosCategory
   explanation?: string
 }
+
+// Half of .diagram-tooltip's max-width, for clamping it inside the viewport.
+const TOOLTIP_HALF_WIDTH = 120
+const VIEWPORT_MARGIN = 8
 
 export function DiagramSVG({ analysis }: Props) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null)
@@ -51,9 +57,13 @@ export function DiagramSVG({ analysis }: Props) {
     return null
   }
 
-  function findInMods(mods: { word: { id: string; pos: PosCategory }; subModifiers?: unknown[] }[], id: string): PosCategory | null {
+  function findInMods(
+    mods: { word: { id: string; pos: PosCategory }; subModifiers?: unknown[]; joinerAfter?: { id: string; pos: PosCategory } }[],
+    id: string
+  ): PosCategory | null {
     for (const m of mods) {
       if (m.word.id === id) return m.word.pos
+      if (m.joinerAfter?.id === id) return m.joinerAfter.pos
       if (m.subModifiers) {
         const sub = findInMods(m.subModifiers as typeof mods, id)
         if (sub) return sub
@@ -65,10 +75,18 @@ export function DiagramSVG({ analysis }: Props) {
   const handleEnter = (t: DiagramText, evt: React.MouseEvent) => {
     if (!t.tokenId) return
     const pos = findTokenPos(t.tokenId) ?? 'other'
-    const rect = (evt.currentTarget as SVGElement).ownerSVGElement?.getBoundingClientRect()
+    // Viewport coordinates (not relative to the SVG) since the tooltip is
+    // portaled to document.body as position: fixed, and clamped so it can
+    // never run past the window's edges.
+    const x = Math.min(
+      Math.max(evt.clientX, TOOLTIP_HALF_WIDTH + VIEWPORT_MARGIN),
+      window.innerWidth - TOOLTIP_HALF_WIDTH - VIEWPORT_MARGIN
+    )
+    const flip = evt.clientY < 90
     setTooltip({
-      x: rect ? evt.clientX - rect.left : t.x,
-      y: rect ? evt.clientY - rect.top : t.y,
+      x,
+      y: evt.clientY,
+      flip,
       word: t.text,
       pos,
       explanation: t.explanation,
@@ -118,13 +136,18 @@ export function DiagramSVG({ analysis }: Props) {
           </text>
         ))}
       </svg>
-      {tooltip && (
-        <div className="diagram-tooltip" style={{ left: tooltip.x, top: tooltip.y }}>
-          <div className="diagram-tooltip-word">{tooltip.word}</div>
-          <div className="diagram-tooltip-pos">{POS_LABELS[tooltip.pos]}</div>
-          <div className="diagram-tooltip-desc">{tooltip.explanation ?? POS_DESCRIPTIONS[tooltip.pos]}</div>
-        </div>
-      )}
+      {tooltip &&
+        createPortal(
+          <div
+            className={`diagram-tooltip${tooltip.flip ? ' diagram-tooltip-below' : ''}`}
+            style={{ left: tooltip.x, top: tooltip.y }}
+          >
+            <div className="diagram-tooltip-word">{tooltip.word}</div>
+            <div className="diagram-tooltip-pos">{POS_LABELS[tooltip.pos]}</div>
+            <div className="diagram-tooltip-desc">{tooltip.explanation ?? POS_DESCRIPTIONS[tooltip.pos]}</div>
+          </div>,
+          document.body
+        )}
     </div>
   )
 }

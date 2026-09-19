@@ -28,6 +28,18 @@ interface RawClause {
  * and subordinating conjunctions. This is a shallow, heuristic split: it
  * does not attempt to resolve deeply nested or embedded clauses.
  */
+/** True if a noun/pronoun (a plausible subject) appears before the next
+ * verb/auxiliary in `tokens` -- used to tell a genuine second independent
+ * clause ("...but Spanish is easier") from an elided-subject compound
+ * predicate ("...but might not win"), which has no subject of its own. */
+function hasSubjectBeforeVerb(tokens: Token[]): boolean {
+  for (const t of tokens) {
+    if (t.pos === 'noun' || t.pos === 'pronoun') return true
+    if (t.pos === 'verb' || t.pos === 'auxiliary') return false
+  }
+  return false
+}
+
 function splitClauses(tokens: Token[]): RawClause[] {
   const segments: RawClause[] = []
   let current: Token[] = []
@@ -62,7 +74,8 @@ function splitClauses(tokens: Token[]): RawClause[] {
       COORDINATING_CONJUNCTIONS.has(word) &&
       current.length > 2 &&
       restHasVerb &&
-      current.some((c) => c.pos === 'verb' || c.pos === 'auxiliary')
+      current.some((c) => c.pos === 'verb' || c.pos === 'auxiliary') &&
+      hasSubjectBeforeVerb(remaining)
     ) {
       flush()
       pendingConnector = t
@@ -103,11 +116,29 @@ function extractNounPhrase(
   while (i < tokens.length) {
     const pendingIdx: number[] = []
     const pending: Token[] = []
-    while (i < tokens.length && (tokens[i].pos === 'article' || tokens[i].pos === 'adjective' || tokens[i].pos === 'adverb')) {
-      if (consumed.has(i)) break
-      pendingIdx.push(i)
-      pending.push(tokens[i])
-      i++
+    while (i < tokens.length && !consumed.has(i)) {
+      const tok = tokens[i]
+      if (tok.pos === 'article' || tok.pos === 'adjective' || tok.pos === 'adverb') {
+        pendingIdx.push(i)
+        pending.push(tok)
+        i++
+        continue
+      }
+      // a coordinating conjunction between two modifiers of the same noun
+      // (e.g. "the big and brown dog") continues the modifier run instead of
+      // ending it
+      if (
+        pending.length > 0 &&
+        tok.pos === 'conjunction' &&
+        COORDINATING_CONJUNCTIONS.has(tok.text.toLowerCase()) &&
+        (tokens[i + 1]?.pos === 'adjective' || tokens[i + 1]?.pos === 'adverb')
+      ) {
+        pendingIdx.push(i)
+        pending.push(tok)
+        i++
+        continue
+      }
+      break
     }
     if (i >= tokens.length || !isNounHead(tokens[i]) || consumed.has(i)) {
       i -= pending.length // back out, this wasn't leading into a head
@@ -122,12 +153,21 @@ function extractNounPhrase(
     const mods = buildModifierChain(pending)
     modifiersByHead[head.id] = mods
 
-    if (i < tokens.length && tokens[i].pos === 'conjunction' && ['and', 'or'].includes(tokens[i].text.toLowerCase())) {
-      const next = tokens[i + 1]
-      if (next && (next.pos === 'article' || next.pos === 'adjective' || isNounHead(next))) {
-        conjunction = tokens[i]
-        consumed.add(i)
-        i++
+    if (i < tokens.length) {
+      const tok = tokens[i]
+      const isConj = tok.pos === 'conjunction' && COORDINATING_CONJUNCTIONS.has(tok.text.toLowerCase())
+      if (isConj) {
+        const next = tokens[i + 1]
+        if (next && (next.pos === 'article' || next.pos === 'adjective' || isNounHead(next))) {
+          conjunction = tok
+          consumed.add(i)
+          i++
+          continue
+        }
+      } else if (head.commaAfter && (tok.pos === 'article' || tok.pos === 'adjective' || isNounHead(tok))) {
+        // an Oxford-comma list ("snakes, darkness, and bugs") — the final
+        // "and"/"or" (if any) is picked up as `conjunction` when we reach
+        // that item above
         continue
       }
     }
@@ -147,6 +187,12 @@ function buildModifierChain(mods: Token[]): ModifierAttachment[] {
   let i = 0
   while (i < mods.length) {
     const t = mods[i]
+    if (t.pos === 'conjunction') {
+      // joins the previous modifier to the next one (e.g. "big and brown")
+      if (result.length) result[result.length - 1].joinerAfter = t
+      i++
+      continue
+    }
     if (t.pos === 'adverb') {
       // an adverb modifies the next adjective in this run, if any
       const next = mods[i + 1]
@@ -168,11 +214,73 @@ function buildModifierChain(mods: Token[]): ModifierAttachment[] {
   return result
 }
 
+/** Collects a run of one or more adverbs starting at `start`, coordinated by
+ * "and"/"or"/etc if present (e.g. "ran slowly and steadily"). Consumes and
+ * returns the matched token indices along with the built modifier list. */
+function collectAdverbRun(tokens: Token[], start: number, consumed: Set<number>): { mods: ModifierAttachment[]; usedIndices: number[] } {
+  const usedIndices: number[] = []
+  const raw: Token[] = []
+  let i = start
+  while (tokens[i] && !consumed.has(i) && tokens[i].pos === 'adverb') {
+    raw.push(tokens[i])
+    usedIndices.push(i)
+    i++
+    if (
+      tokens[i] &&
+      !consumed.has(i) &&
+      tokens[i].pos === 'conjunction' &&
+      COORDINATING_CONJUNCTIONS.has(tokens[i].text.toLowerCase()) &&
+      tokens[i + 1]?.pos === 'adverb'
+    ) {
+      raw.push(tokens[i])
+      usedIndices.push(i)
+      i++
+      continue
+    }
+    break
+  }
+  const mods: ModifierAttachment[] = []
+  raw.forEach((t, k) => {
+    if (t.pos === 'conjunction') return
+    const mod: ModifierAttachment = { word: t, explanation: describeModifier(t) }
+    if (raw[k + 1]?.pos === 'conjunction') mod.joinerAfter = raw[k + 1]
+    mods.push(mod)
+  })
+  return { mods, usedIndices }
+}
+
 function describeModifier(t: Token): string {
   if (t.pos === 'article') return `"${t.text}" introduces the noun.`
   if (t.pos === 'adjective') return `"${t.text}" describes the noun.`
   if (t.pos === 'adverb') return `"${t.text}" modifies the word it points to.`
   return ''
+}
+
+/** Scans forward from `start` for a contiguous run of verb/auxiliary tokens.
+ * A bare "not" embedded between two of them (e.g. "will not lose") stays
+ * part of the same cluster instead of ending it early; it's returned keyed
+ * by the id of the head it's attached to (the one right before it) so the
+ * caller can diagram it as that head's modifier. */
+function scanVerbCluster(tokens: Token[], start: number): { end: number; heads: Token[]; negations: Record<string, Token> } {
+  const heads: Token[] = []
+  const negations: Record<string, Token> = {}
+  let i = start
+  let end = start - 1
+  while (tokens[i] && (tokens[i].pos === 'verb' || tokens[i].pos === 'auxiliary')) {
+    heads.push(tokens[i])
+    end = i
+    i++
+    if (
+      tokens[i] &&
+      tokens[i].text.toLowerCase() === 'not' &&
+      (tokens[i + 1]?.pos === 'verb' || tokens[i + 1]?.pos === 'auxiliary')
+    ) {
+      negations[tokens[i - 1].id] = tokens[i]
+      end = i
+      i++
+    }
+  }
+  return { end, heads, negations }
 }
 
 function extractPrepPhrases(tokens: Token[], consumed: Set<number>): PrepPhrase[] {
@@ -197,8 +305,7 @@ function extractPrepPhrases(tokens: Token[], consumed: Set<number>): PrepPhrase[
     phrases.push({
       id: nextId('pp'),
       preposition: prep,
-      objectHead: np.slot.heads[0],
-      objectModifiers: np.slot.modifiers[np.slot.heads[0].id] ?? [],
+      object: np.slot,
       modifies,
       role,
     })
@@ -213,37 +320,37 @@ function parseClauseTokens(tokens: Token[], kind: 'independent' | 'subordinate',
   // locate main verb cluster among unconsumed tokens (before prepositional
   // phrases are extracted, so PP role-detection below sees settled verb tags)
   let verbStart = -1
-  let verbEnd = -1
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i].pos === 'verb' || tokens[i].pos === 'auxiliary') {
-      if (verbStart === -1) verbStart = i
-      verbEnd = i
-      continue
+      verbStart = i
+      break
     }
-    if (verbStart !== -1) break
   }
 
-  const verbHeads: Token[] = []
+  let verbEnd = -1
+  let verbHeads: Token[] = []
   let verbConjunction: Token | undefined
+  let verbClusterSizes: number[] | undefined
+  const verbNegations: Record<string, Token> = {}
   if (verbStart !== -1) {
-    for (let i = verbStart; i <= verbEnd; i++) {
-      verbHeads.push(tokens[i])
-      consumed.add(i)
-    }
-    // compound verb: VERB and VERB
-    let j = verbEnd + 1
-    if (tokens[j] && tokens[j].pos === 'conjunction' && ['and', 'or'].includes(tokens[j].text.toLowerCase())) {
-      let k = j + 1
-      const secondStart = k
-      while (tokens[k] && (tokens[k].pos === 'verb' || tokens[k].pos === 'auxiliary')) k++
-      if (k > secondStart) {
-        verbConjunction = tokens[j]
-        consumed.add(j)
-        for (let m = secondStart; m < k; m++) {
-          verbHeads.push(tokens[m])
-          consumed.add(m)
-        }
-        verbEnd = k - 1
+    const cluster = scanVerbCluster(tokens, verbStart)
+    verbEnd = cluster.end
+    verbHeads = cluster.heads
+    Object.assign(verbNegations, cluster.negations)
+    for (let i = verbStart; i <= verbEnd; i++) consumed.add(i)
+
+    // compound verb: VERB and/but/or/etc VERB (e.g. "will not lose but might not win")
+    const conjIdx = verbEnd + 1
+    if (tokens[conjIdx] && tokens[conjIdx].pos === 'conjunction' && COORDINATING_CONJUNCTIONS.has(tokens[conjIdx].text.toLowerCase())) {
+      const secondCluster = scanVerbCluster(tokens, conjIdx + 1)
+      if (secondCluster.heads.length > 0) {
+        verbConjunction = tokens[conjIdx]
+        consumed.add(conjIdx)
+        for (let i = conjIdx + 1; i <= secondCluster.end; i++) consumed.add(i)
+        verbClusterSizes = [cluster.heads.length, secondCluster.heads.length]
+        verbHeads.push(...secondCluster.heads)
+        Object.assign(verbNegations, secondCluster.negations)
+        verbEnd = secondCluster.end
       }
     }
   }
@@ -281,6 +388,18 @@ function parseClauseTokens(tokens: Token[], kind: 'independent' | 'subordinate',
     }
   }
 
+  // imperative sentence ("Give me your money!") — the verb is the very first
+  // token, so no room exists before it for a subject; diagram the standard
+  // implied "(you)" in subject position
+  if (subject === null && verbStart === 0) {
+    subject = {
+      heads: [{ id: nextId('implied'), text: '(you)', pos: 'pronoun', tags: ['Imperative', 'Implied'], index: -1, commaAfter: false }],
+      conjunction: undefined,
+      modifiers: {},
+      prepPhrases: [],
+    }
+  }
+
   const lastVerbText = verbHeads.length ? verbHeads[verbHeads.length - 1].text.toLowerCase() : ''
   const isLinking = BE_FORMS.has(lastVerbText) || LINKING_VERB_LEMMAS.has(lastVerbText)
 
@@ -299,9 +418,12 @@ function parseClauseTokens(tokens: Token[], kind: 'independent' | 'subordinate',
 
   // adverbs directly adjacent to the verb (not already part of a noun phrase) modify it
   const verbModifiers: Record<string, ModifierAttachment[]> = {}
+  Object.entries(verbNegations).forEach(([headId, notTok]) => {
+    verbModifiers[headId] = [{ word: notTok, explanation: `"${notTok.text}" negates the verb.` }]
+  })
   if (verbHeads.length) {
     const lastHead = verbHeads[verbHeads.length - 1]
-    const adverbMods: ModifierAttachment[] = []
+    const adverbMods: ModifierAttachment[] = verbModifiers[lastHead.id] ? [...verbModifiers[lastHead.id]] : []
     // an adverb right before the verb (e.g. "quickly ran") modifies it
     if (verbStart > 0 && tokens[verbStart - 1]?.pos === 'adverb' && !consumed.has(verbStart - 1)) {
       const t = tokens[verbStart - 1]
@@ -318,9 +440,9 @@ function parseClauseTokens(tokens: Token[], kind: 'independent' | 'subordinate',
       tokens[afterIdx].pos === 'adverb' &&
       tokens[afterIdx + 1]?.pos !== 'adjective'
     ) {
-      const t = tokens[afterIdx]
-      adverbMods.push({ word: t, explanation: describeModifier(t) })
-      consumed.add(afterIdx)
+      const { mods, usedIndices } = collectAdverbRun(tokens, afterIdx, consumed)
+      adverbMods.push(...mods)
+      usedIndices.forEach((idx) => consumed.add(idx))
     }
     if (adverbMods.length) verbModifiers[lastHead.id] = adverbMods
   }
@@ -393,7 +515,7 @@ function parseClauseTokens(tokens: Token[], kind: 'independent' | 'subordinate',
   const leftoverWords = tokens.filter((t, i) => !consumed.has(i) && t.pos !== 'conjunction' && /[a-zA-Z]/.test(t.text))
 
   const verb: VerbSlot | null = verbHeads.length
-    ? { heads: verbHeads, conjunction: verbConjunction, modifiers: verbModifiers, prepPhrases: verbPrepPhrases, isLinking }
+    ? { heads: verbHeads, conjunction: verbConjunction, modifiers: verbModifiers, prepPhrases: verbPrepPhrases, isLinking, clusterSizes: verbClusterSizes }
     : null
 
   return {
@@ -442,6 +564,9 @@ export function analyzeSentence(raw: string): SentenceAnalysis {
     }
   })
 
+  if (clauses.some((c) => c.subject?.heads[0]?.tags.includes('Implied'))) {
+    notes.push('This is an imperative sentence — the subject "you" is implied, not written, so it\'s shown as "(you)".')
+  }
   if (clauses.some((c) => c.kind === 'subordinate')) {
     notes.push('This sentence includes a subordinate clause, shown as a smaller diagram beneath the main clause it modifies.')
   }

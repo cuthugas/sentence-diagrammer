@@ -80,7 +80,17 @@ function drawDiagonal(
  * its parent's diagonal so it visibly diverges instead of running collinear with it. */
 const SUB_ANGLE_DEG = ANGLE_DEG + 24
 
-/** Lays out a stack of modifiers (and their sub-modifiers) below a head point. */
+/** Horizontal gap between the attachment points of coordinate modifiers fanned
+ * out under the same head (see layoutModifierStack). */
+const MODIFIER_SPACING = 24
+
+/**
+ * Lays out a stack of coordinate modifiers of one word (e.g. "the young" both
+ * modifying "boys") as separate parallel diagonals, each touching the
+ * baseline directly, fanned out to the left of the head — the standard
+ * Reed-Kellogg convention. The modifier closest to the head in the sentence
+ * (last in the list) attaches nearest it; earlier ones fan out further left.
+ */
 function layoutModifierStack(
   lines: DiagramLine[],
   texts: DiagramText[],
@@ -90,29 +100,55 @@ function layoutModifierStack(
 ): { rightExtent: number; bottomExtent: number } {
   let rightExtent = headX
   let bottomExtent = baseY
-
-  // Vertical stem the head hangs from, so stacked modifiers branch off one
-  // continuous line instead of floating as disconnected diagonal segments.
-  if (modifiers.length > 1) {
-    const lastY = baseY + LEVEL_HEIGHT * (modifiers.length - 1) + 6
-    lines.push({ key: key('stem'), x1: headX, y1: baseY, x2: headX, y2: lastY })
-  }
+  const n = modifiers.length
+  const placements: { x: number; endX: number; endY: number }[] = []
 
   modifiers.forEach((mod, i) => {
-    const y = baseY + LEVEL_HEIGHT * (i + 1) - LEVEL_HEIGHT + 6
-    const { endX, endY } = drawDiagonal(lines, texts, headX, y, mod.word, mod.explanation)
+    const x = headX - (n - 1 - i) * MODIFIER_SPACING
+    const { endX, endY } = drawDiagonal(lines, texts, x, baseY, mod.word, mod.explanation)
+    placements.push({ x, endX, endY })
     rightExtent = Math.max(rightExtent, endX)
     bottomExtent = Math.max(bottomExtent, endY)
     if (mod.subModifiers && mod.subModifiers.length) {
       mod.subModifiers.forEach((sub) => {
-        const branchX = headX + (endX - headX) * 0.35
-        const branchY = y + (endY - y) * 0.35
+        const branchX = x + (endX - x) * 0.35
+        const branchY = baseY + (endY - baseY) * 0.35
         const r = drawDiagonal(lines, texts, branchX, branchY, sub.word, sub.explanation, FONT_SIZE - 4, SUB_ANGLE_DEG)
         rightExtent = Math.max(rightExtent, r.endX)
         bottomExtent = Math.max(bottomExtent, r.endY)
       })
     }
   })
+
+  // dashed connector + conjunction label between two coordinate modifiers
+  // joined by "and"/"or"/etc (e.g. "slowly and steadily"). A modifier's own
+  // text runs nearly the full length of its diagonal -- and the row right
+  // above the diagonals is already crowded by the head word -- so neither
+  // leaves a clear spot for this. The tip of each diagonal, just past where
+  // its text ends, is the one place reliably clear of both, so the
+  // connector joins there instead of "near the top" as in the simpler
+  // stacked-line case.
+  modifiers.forEach((mod, i) => {
+    if (!mod.joinerAfter || i + 1 >= placements.length) return
+    const a = placements[i]
+    const b = placements[i + 1]
+    lines.push({ key: key('modjoin'), x1: a.endX, y1: a.endY, x2: b.endX, y2: b.endY, dashed: true })
+    const labelY = (a.endY + b.endY) / 2 + 13
+    texts.push({
+      key: key('modjoinword'),
+      x: (a.endX + b.endX) / 2,
+      y: labelY,
+      text: mod.joinerAfter.text,
+      color: POS_COLORS.conjunction,
+      fontStyle: 'italic',
+      fontSize: FONT_SIZE - 4,
+      anchor: 'middle',
+      tokenId: mod.joinerAfter.id,
+      explanation: `"${mod.joinerAfter.text}" connects these modifiers.`,
+    })
+    bottomExtent = Math.max(bottomExtent, labelY)
+  })
+
   return { rightExtent, bottomExtent }
 }
 
@@ -130,27 +166,19 @@ function layoutPrepPhrases(
   phrases.forEach((pp, i) => {
     const y = baseY + LEVEL_HEIGHT * (startLevel + i) + 6
     const { endX, endY } = drawDiagonal(lines, texts, headX, y, pp.preposition, `"${pp.preposition.text}" shows the relationship to what follows.`)
-    // shelf: horizontal baseline for the object of the preposition
+    // shelf: horizontal line the object of the preposition sits on -- laid
+    // out as a full noun-phrase slot so a compound/Oxford-comma object
+    // ("except snakes, darkness, and bugs") renders every item, not just one
     const shelfY = endY + 8
     const shelfStartX = endX - 6
-    let cx = shelfStartX
-    const objW = wordWidth(pp.objectHead.text)
-    lines.push({ key: key('shelf'), x1: shelfStartX, y1: shelfY, x2: shelfStartX + objW + 60, y2: shelfY })
-    texts.push({
-      key: key('obj'),
-      x: cx + 4,
-      y: shelfY - 6,
-      text: pp.objectHead.text,
-      color: POS_COLORS[pp.objectHead.pos],
-      fontWeight: 600,
-      anchor: 'start',
-      tokenId: pp.objectHead.id,
-      explanation: `Object of the preposition "${pp.preposition.text}."`,
+    const objRes = layoutNounSlot(lines, texts, shelfStartX + 4, shelfY, pp.object)
+    objRes.heads.forEach((hp) => {
+      const t = texts.find((tx) => tx.tokenId === hp.token.id && tx.explanation === undefined)
+      if (t) t.explanation = `Object of the preposition "${pp.preposition.text}."`
     })
-    cx += objW + 8
-    const mods = layoutModifierStack(lines, texts, cx - objW / 2, shelfY, pp.objectModifiers)
-    rightExtent = Math.max(rightExtent, endX, mods.rightExtent, cx)
-    bottomExtent = Math.max(bottomExtent, mods.bottomExtent, shelfY + LEVEL_HEIGHT)
+    lines.push({ key: key('shelf'), x1: shelfStartX, y1: shelfY, x2: Math.max(objRes.rightExtent, shelfStartX + 34) + 20, y2: shelfY })
+    rightExtent = Math.max(rightExtent, endX, objRes.rightExtent)
+    bottomExtent = Math.max(bottomExtent, objRes.bottomExtent, shelfY + LEVEL_HEIGHT)
   })
   return { rightExtent, bottomExtent }
 }
@@ -169,12 +197,34 @@ function layoutNounSlot(
   let bottomExtent = baselineY
   const isCompound = slot.heads.length > 1 && !!slot.conjunction
 
+  // Each coordinate branch can span more than one head (e.g. a compound verb
+  // "will not lose but might not win" -- "will" and "lose" are one branch).
+  // Map every head to its branch index, and mark which heads start a new one,
+  // so the alternating offset and the dashed connector apply per branch, not
+  // per individual head.
+  const clusterSizes = slot.clusterSizes ?? slot.heads.map(() => 1)
+  const clusterOfHead: number[] = []
+  const clusterStarts = new Set<number>()
+  {
+    let idx = 0
+    clusterSizes.forEach((size, ci) => {
+      clusterStarts.add(idx)
+      for (let k = 0; k < size && idx < slot.heads.length; k++, idx++) {
+        clusterOfHead[idx] = ci
+      }
+    })
+    for (; idx < slot.heads.length; idx++) clusterOfHead[idx] = clusterSizes.length - 1
+  }
+
   slot.heads.forEach((h, i) => {
-    const y = isCompound ? baselineY + (i % 2 === 0 ? -COMPOUND_OFFSET : COMPOUND_OFFSET) : baselineY
+    const clusterIdx = clusterOfHead[i] ?? i
+    const y = isCompound ? baselineY + (clusterIdx % 2 === 0 ? -COMPOUND_OFFSET : COMPOUND_OFFSET) : baselineY
     const w = wordWidth(h.text)
-    if (isCompound && i > 0) {
+    if (isCompound && i > 0 && clusterStarts.has(i)) {
       lines.push({ key: key('cjoin'), x1: cx - 4, y1: baselineY - COMPOUND_OFFSET, x2: cx - 4, y2: baselineY + COMPOUND_OFFSET, dashed: true })
-      if (slot.conjunction) {
+      // for a 3+ item list ("snakes, darkness, and bugs"), only write the
+      // conjunction once, on the last connector
+      if (slot.conjunction && clusterIdx === clusterSizes.length - 1) {
         texts.push({
           key: key('cword'),
           x: cx + 4,
@@ -187,6 +237,7 @@ function layoutNounSlot(
           tokenId: slot.conjunction.id,
           explanation: `"${slot.conjunction.text}" connects the compound parts.`,
         })
+        cx += wordWidth(slot.conjunction.text, 500) * 0.6
       }
       cx += 26
     }
@@ -243,7 +294,12 @@ export function layoutClause(clause: Clause): DiagramGroup {
     }
   }
 
-  // subject
+  // subject — reserve left margin so its fanned-out modifiers (see
+  // layoutModifierStack) don't run past the diagram's left edge; every later
+  // slot already has room to its left from what came before it.
+  const firstHeadId = clause.subject.heads[0]?.id
+  const firstHeadModCount = firstHeadId ? (clause.subject.modifiers[firstHeadId]?.length ?? 0) : 0
+  cx += Math.max(0, firstHeadModCount - 1) * MODIFIER_SPACING
   const subj = layoutNounSlot(lines, texts, cx, baselineY, clause.subject)
   maxBottom = Math.max(maxBottom, subj.bottomExtent)
   cx = subj.rightExtent + DIVIDER_GAP
@@ -259,6 +315,7 @@ export function layoutClause(clause: Clause): DiagramGroup {
     conjunction: clause.verb.conjunction,
     modifiers: clause.verb.modifiers,
     prepPhrases: clause.verb.prepPhrases,
+    clusterSizes: clause.verb.clusterSizes,
   }
   const verbRes = layoutNounSlot(lines, texts, cx, baselineY, verbSlotAsNoun)
   maxBottom = Math.max(maxBottom, verbRes.bottomExtent)

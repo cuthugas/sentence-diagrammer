@@ -17,6 +17,7 @@ export function categorize(normal: string, tags: string[], nextIsVerbish: boolea
   // an infinitive marker (compromise tags both as Conjunction)
   if (PREPOSITIONS.has(word) && !has('Verb') && !(word === 'to' && nextIsVerbish)) return 'preposition'
   if (has('Conjunction')) return 'conjunction'
+  if (word === 'not' || word === "n't") return 'adverb' // negation (compromise tags it as its own class, not Adverb)
   if (has('Particle')) return 'adverb' // phrasal-verb particles ("ran away") diagram as adverbs
   if (has('Date')) return 'adverb' // "today"/"tomorrow" etc. used adverbially
   if (AUXILIARIES.has(word)) return nextIsVerbish ? 'auxiliary' : 'verb'
