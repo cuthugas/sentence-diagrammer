@@ -283,6 +283,21 @@ function scanVerbCluster(tokens: Token[], start: number): { end: number; heads: 
   return { end, heads, negations }
 }
 
+/** Attaches each adjectival prep phrase to whichever head it modifies,
+ * searching not just `slot`'s own heads but recursively into the objects of
+ * any prep phrases already on it -- otherwise a phrase modifying a noun
+ * buried inside another prep phrase's object (e.g. "met her in the morning
+ * at the park", where "at the park" modifies "morning") is extracted and
+ * consumed but never attached anywhere, silently vanishing from the diagram. */
+function attachAdjPrepPhrases(slot: NounSlot | null | undefined, pool: PrepPhrase[]): void {
+  if (!slot) return
+  slot.heads.forEach((h) => {
+    const attached = pool.filter((p) => p.modifies === h.id)
+    if (attached.length) slot.prepPhrases.push(...attached)
+  })
+  slot.prepPhrases.forEach((pp) => attachAdjPrepPhrases(pp.object, pool))
+}
+
 function extractPrepPhrases(tokens: Token[], consumed: Set<number>): PrepPhrase[] {
   const phrases: PrepPhrase[] = []
   for (let i = 0; i < tokens.length; i++) {
@@ -370,15 +385,33 @@ function parseClauseTokens(tokens: Token[], kind: 'independent' | 'subordinate',
   }
 
   // fallback: no verb/auxiliary tag was found anywhere (common for base-form
-  // verbs that are also common nouns, e.g. "sleep", "walk", "dance" — the
-  // statistical tagger sometimes guesses noun). If a subject was found,
-  // assume the next unclaimed word is the verb. Mutate it in place so every
-  // later step (prepositional-phrase role detection included) sees it as a verb.
+  // verbs that are also common nouns, e.g. "sleep", "walk", "dance", "barks" —
+  // the statistical tagger sometimes guesses noun). If a subject was found,
+  // look past any leading prepositional phrase ("The dog in the yard barks")
+  // for the next unclaimed word and assume that's the verb. The prepositional
+  // phrase itself is only peeked at (a throwaway copy of `consumed`) so it's
+  // still there for extractPrepPhrases to properly attach afterward. Mutate
+  // the chosen word in place so every later step sees it as a verb.
   if (verbStart === -1 && subject) {
-    for (let i = subjectEnd; i < tokens.length; i++) {
-      if (consumed.has(i)) continue
+    let i = subjectEnd
+    while (i < tokens.length) {
+      if (consumed.has(i)) {
+        i++
+        continue
+      }
       const t = tokens[i]
-      if (t.pos === 'conjunction' || t.pos === 'preposition' || t.pos === 'article') break
+      if (t.pos === 'conjunction') break
+      if (t.pos === 'preposition') {
+        const probe = new Set(consumed)
+        const np = extractNounPhrase(tokens, i + 1, probe)
+        if (!np) break
+        i = np.end
+        continue
+      }
+      if (t.pos === 'article' || t.pos === 'adjective' || t.pos === 'adverb') {
+        i++
+        continue
+      }
       tokens[i] = { ...t, pos: 'verb' }
       verbHeads.push(tokens[i])
       verbStart = i
@@ -409,12 +442,7 @@ function parseClauseTokens(tokens: Token[], kind: 'independent' | 'subordinate',
   const verbPrepPhrases = prepPhrases.filter((p) => p.role === 'adverbial')
   const adjPrepPhrases = prepPhrases.filter((p) => p.role === 'adjectival')
 
-  if (subject) {
-    for (const h of subject.heads) {
-      const attached = adjPrepPhrases.filter((p) => p.modifies === h.id)
-      if (attached.length) subject.prepPhrases.push(...attached)
-    }
-  }
+  attachAdjPrepPhrases(subject, adjPrepPhrases)
 
   // adverbs directly adjacent to the verb (not already part of a noun phrase) modify it
   const verbModifiers: Record<string, ModifierAttachment[]> = {}
@@ -499,18 +527,9 @@ function parseClauseTokens(tokens: Token[], kind: 'independent' | 'subordinate',
     }
   }
 
-  if (complement) {
-    for (const h of complement.heads) {
-      const attached = adjPrepPhrases.filter((p) => p.modifies === h.id)
-      if (attached.length) complement.prepPhrases.push(...attached)
-    }
-  }
-  if (indirectObject) {
-    for (const h of indirectObject.heads) {
-      const attached = adjPrepPhrases.filter((p) => p.modifies === h.id)
-      if (attached.length) indirectObject.prepPhrases.push(...attached)
-    }
-  }
+  attachAdjPrepPhrases(complement, adjPrepPhrases)
+  attachAdjPrepPhrases(indirectObject, adjPrepPhrases)
+  verbPrepPhrases.forEach((pp) => attachAdjPrepPhrases(pp.object, adjPrepPhrases))
 
   const leftoverWords = tokens.filter((t, i) => !consumed.has(i) && t.pos !== 'conjunction' && /[a-zA-Z]/.test(t.text))
 

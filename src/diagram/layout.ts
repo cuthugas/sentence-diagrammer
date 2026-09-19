@@ -211,7 +211,14 @@ function layoutPrepPhrases(
   let rightExtent = headX
   let bottomExtent = baseY
   phrases.forEach((pp, i) => {
-    const y = baseY + LEVEL_HEIGHT * (startLevel + i) + 6
+    const level = startLevel + i
+    const y = baseY + LEVEL_HEIGHT * level
+    if (level > 0) {
+      // a second (or later) phrase on the same head doesn't start at the
+      // baseline itself -- bridge the gap with a visible stem so it still
+      // reads as connected rather than floating
+      lines.push({ key: key('ppstem'), x1: headX, y1: baseY, x2: headX, y2: y })
+    }
     const { endX, endY } = drawDiagonal(lines, texts, headX, y, pp.preposition, `"${pp.preposition.text}" shows the relationship to what follows.`)
     // shelf: horizontal line the object of the preposition sits on -- laid
     // out as a full noun-phrase slot so a compound/Oxford-comma object
@@ -312,9 +319,13 @@ function layoutNounSlot(
 
   if (slot.prepPhrases.length) {
     const last = heads[heads.length - 1]
-    // starts right at the baseline (level 0) so its diagonal visibly
-    // connects to the head, same as any other modifier
-    const pp = layoutPrepPhrases(lines, texts, last.x - wordWidth(last.token.text) / 2, baselineY, 0, slot.prepPhrases)
+    // Attach at the head's trailing edge, not its start -- the start is
+    // exactly where the head's own closest modifier (if any) attaches too
+    // (see modifierAttachXs), so anchoring the prep phrase there as well
+    // made the two diagonals collide/overlap whenever a word had both
+    // (e.g. "the dog in the yard").
+    const ppHeadX = last.x + wordWidth(last.token.text) / 2
+    const pp = layoutPrepPhrases(lines, texts, ppHeadX, baselineY, 0, slot.prepPhrases)
     rightExtent = Math.max(rightExtent, pp.rightExtent)
     bottomExtent = Math.max(bottomExtent, pp.bottomExtent)
   }
